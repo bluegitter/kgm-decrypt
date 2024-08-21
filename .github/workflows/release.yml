@@ -5,84 +5,48 @@ on:
     tags:
       - 'v*'  # 仅在推送 tag 时触发
   workflow_dispatch:  # 手动触发工作流
-
+  
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        goos: [linux, windows, darwin]  # 指定三个目标操作系统
-        goarch: [amd64]  # 可以根据需要添加其他架构，如 arm64
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: 1.20  # 替换为你项目所需的Go版本
-
-    - name: Install dependencies
-      run: go get -v ./...
-
-    - name: Build Executable
-      run: |
-        GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o kgm-decrypt-${{ matrix.goos }}-${{ matrix.goarch }}
-
-    - name: Archive Artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: kgm-decrypt-${{ matrix.goos }}-${{ matrix.goarch }}
-        path: kgm-decrypt-${{ matrix.goos }}-${{ matrix.goarch }}
-
   release:
-    needs: build
+    name: Upload Release Asset
     runs-on: ubuntu-latest
     steps:
-    - name: Download Artifacts
-      uses: actions/download-artifact@v3
-      with:
-        name: kgm-decrypt-linux-amd64
-    - name: Download Artifacts
-      uses: actions/download-artifact@v3
-      with:
-        name: kgm-decrypt-windows-amd64
-    - name: Download Artifacts
-      uses: actions/download-artifact@v3
-      with:
-        name: kgm-decrypt-darwin-amd64
+      - name: Install Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: 1.x
+      - name: Checkout repository
+        uses: actions/checkout@v2
+      - name: Build binaries
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "kgm-decrypt-$(git describe --tags)-linux-amd64" -ldflags "-X main.Version=$(git describe --tags)"
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=6 go build -o "kgm-decrypt-$(git describe --tags)-linux-arm" -ldflags "-X main.Version=$(git describe --tags)"
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o "kgm-decrypt-$(git describe --tags)-linux-arm64" -ldflags "-X main.Version=$(git describe --tags)"
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o "kgm-decrypt-$(git describe --tags)-darwin-amd64" -ldflags "-X main.Version=$(git describe --tags)"
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o "kgm-decrypt-$(git describe --tags)-darwin-arm64" -ldflags "-X main.Version=$(git describe --tags)"
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o "kgm-decrypt-$(git describe --tags)-windows-amd64.exe" -ldflags "-X main.Version=$(git describe --tags)"
+          CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -o "kgm-decrypt-$(git describe --tags)-windows-arm64.exe" -ldflags "-X main.Version=$(git describe --tags)"
+      - name: Upload release artifacts
+        uses: actions/github-script@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require("fs").promises;
+            const { repo: { owner, repo }, sha } = context;
 
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
-      with:
-        tag_name: ${{ github.ref_name }}
-        release_name: Release ${{ github.ref_name }}
-        draft: false
-        prerelease: false
-        generate_release_notes: true
-        token: ${{ secrets.GITHUB_TOKEN }}
+            const release = await github.repos.getReleaseByTag({
+              owner, repo,
+              tag: process.env.GITHUB_REF.replace("refs/tags/", ""),
+            });
+            console.log("Release:", { release });
 
-    - name: Upload Linux Executable
-      uses: actions/upload-release-asset@v1
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: kgm-decrypt-linux-amd64
-        asset_name: kgm-decrypt-linux-amd64
-        asset_content_type: application/octet-stream
-
-    - name: Upload Windows Executable
-      uses: actions/upload-release-asset@v1
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: kgm-decrypt-windows-amd64
-        asset_name: kgm-decrypt-windows-amd64.exe
-        asset_content_type: application/octet-stream
-
-    - name: Upload macOS Executable
-      uses: actions/upload-release-asset@v1
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: kgm-decrypt-darwin-amd64
-        asset_name: kgm-decrypt-darwin-amd64
-        asset_content_type: application/octet-stream
+            for (let file of await fs.readdir(".")) {
+              if (!file.startsWith("kgm-decrypt-")) continue;
+              console.log("Uploading", file);
+              await github.repos.uploadReleaseAsset({
+                owner, repo,
+                release_id: release.data.id,
+                name: file,
+                data: await fs.readFile(file),
+              });
+            }
